@@ -1,0 +1,283 @@
+---
+title: "buffers-sebas"
+output: html_document
+---
+
+```{r}
+instalar <- function(paquete) {
+if (!require(paquete,character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)) {
+#  install.packages(as.character(paquete), dependecies = TRUE, repos = "http://cran.us.r-project.org")
+library(paquete, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)
+}
+}
+
+
+paquetes <- c('plotly','ggplot2', 'readr', 'dplyr', 'devtools', 'igraph', "tidyverse", "glmnet", "ggraph", "tidygraph")
+
+paquetes2 <- c('osmdata',"rgdal","maptools" ,"rgeos", "GeoRange")
+
+extras <- c("haven","foreign","network","tidyverse","corrr","linkcomm","sjlabelled","rlist","ddpcr","rlist")
+
+lapply(paquetes, instalar);
+lapply(paquetes2, instalar);
+theme_set(theme_minimal())
+```
+
+```{r setup, include=FALSE}
+
+library(easypackages)
+libraries("rgdal", "raster", "rgeos", "sp", "scales", "maptools", "GISTools", "tidyverse", "data.table", "sf", "plotly", "RColorBrewer", "htmlwidgets")
+```
+
+```{r}
+df <- read_csv("agregado_dist_sec.csv")
+```
+
+
+```{r}
+# df con escuelas de origen
+df_o <- df %>% select(cct_o, longitud_o, latitud_o) %>% 
+distinct(cct_o, .keep_all = TRUE) %>%  rename(latitud=latitud_o, longitud=longitud_o)
+head(df)
+# df con escuelas de destino
+df_d <- df %>% select(cct_d, longitud_d, latitud_d) %>% 
+distinct(cct_d, .keep_all = TRUE) %>%  rename(latitud=latitud_d, longitud=longitud_d)
+
+## longitud
+max(na.omit(df_o$longitud))  #-86.72559
+min(na.omit(df_o$longitud))  # -117.1201 
+sum(is.na(df_o$longitud))    # 73
+
+max(na.omit(df_o$latitud))   # 32.71284
+min(na.omit(df_o$latitud))   # 14.59373
+sum(is.na(df_o$latitud))     # 75
+
+# sacar los que están fuera de mexico
+df_o$latitud[df_o$latitud < 15] <- NA
+df_o$latitud[df_o$latitud > 33] <- NA
+df_o$longitud[df_o$longitud > -85] <- NA
+df_o$longitud[df_o$longitud < -120] <- NA
+
+# conservar los que no tienen NAs
+u_cct_o <-df %>% distinct(cct_o, .keep_all = TRUE) %>% 
+select(cct_o, latitud_o, longitud_o) %>% 
+rename(lat = latitud_o, lon = longitud_o, name = cct_o)
+
+u_cct_d <- df %>% distinct(cct_d, .keep_all = TRUE) %>% 
+select(cct_d, latitud_d, longitud_d) %>% 
+rename(lat = latitud_d, lon = longitud_d, name = cct_d)
+
+df_o  <- rbind(u_cct_d, u_cct_o) %>% 
+distinct(name, .keep_all = TRUE) %>% 
+filter(!is.na(lon), !is.na(lat)) %>% 
+rename(latitud = lat, longitud = lon, cct_o = name)
+
+```
+
+
+```{r}
+get_stats_sub_group <- function(current_sub_group,select_nodos){
+  sub_group<- select_nodos %>% filter(buff_num == current_sub_group)
+  
+  distance_matrix <- dist(sub_group%>% as.matrix(),
+            method = 'euclidean')%>% as.matrix()
+  
+  distance_matrix[lower.tri(distance_matrix , diag = TRUE)] <-NA
+  
+  #Area envolvente convexa
+  convex_hull <- CHullAreaEarth(sub_group$longitud,  sub_group$latitud)
+  
+  # Estadisticas de la escuela
+  num_schools <- nrow(sub_group)
+
+  data.frame(group =current_sub_group,
+        mean = mean(distance_matrix, na.rm =TRUE), 
+        max =  max(distance_matrix,na.rm =TRUE),
+        min =   min(distance_matrix ,na.rm =TRUE), 
+        median = median(distance_matrix,na.rm =TRUE),
+        convex_hull =  convex_hull,
+        num_elem = num_schools)
+}
+
+get_stats_group <- function(nodos, KM) {
+sub_results <- data.frame(group = -1,
+                          mean = -1,
+                          max = -1,
+                          min = -1,
+                          median = -1,
+                          convex_hull  = -1,
+                          num_elem = -1)
+                       
+
+list_groups <- unique(nodos$buff_num) %>% sort()
+tam <- length(list_groups) 
+for (i in 1:tam){
+  curr_group <- list_groups[[i]] 
+  r <- get_stats_sub_group(curr_group,nodos)
+  sub_results <- rbind(sub_results, r)
+}
+
+sub_results <- sub_results %>% filter(group != -1)
+nom_archivo <- str_c("SEBAS_results_group_km_", KM*100, ".csv") 
+sub_results$group <- as.numeric(sub_results$group)
+sub_results <- round(sub_results,2)
+write.csv(round(sub_results,2),nom_archivo)
+
+}
+
+
+```
+
+
+```{r}
+######## Funciones para generar loop
+
+create_buffers <- function(n_escuelas, buffer_r=1000,vec_lon=df_o$longitud, vec_lat=df_o$latitud, cct = df_o$cct_o){
+"
+Tras recibir un vector de longitudes  y latitudes, toma aleatoriamente una muestra de observaciones y devuelve matriz con
+coordenadas y con el número buffer asociado. También deja en el entorno global la variable 'buffers_sf' que tiene la información
+espacial de los buffers calculados.
+* argumentos:
+  ** n_escuelas: # escuelas que se toman al azar de la matriz de coordenadas
+  ** buffer_r: radio del buffer a crear (en mts)
+  ** vec_lon: vector con las longitudes de las escuelas
+  ** vec_lat: vector con las latitudes de las escuelas
+* salidas:
+  ** buff_mat: matriz con coordenadas y con el número buffer asociado
+"
+set.seed(333814)
+matrix_df <- data.frame(cbind(vec_lon, vec_lat)) # conformar matriz de coordenadas
+names_df <- data.frame(cct)
+draw <- sample(nrow(matrix_df), n_escuelas, replace = FALSE)
+mat <- matrix_df[draw, ] # aleatoreamente tomar n_escuelas escuelas
+names_cct <-names_df[draw, ]
+
+names(mat) <- c("longitud", "latitud")
+names(names_cct) <- c("names")
+
+mat_info <- mat # matriz que tendrá info de coordenadas y buffers
+# proyecciones
+unproj <- CRS("+proj=longlat +datum=WGS84") # proyección WGS84 
+proj <- CRS("+init=epsg:6370")  # proyectado a UTM para MExico Ver: https://epsg.io/6370
+coordinates(mat) <- c(x="longitud", y="latitud") # convertir a shapefile
+proj4string(mat) <- unproj   # asignar una proyección
+mat <- spTransform(mat, proj) # reproyectar el shapefile a WGS84 UTM 42N (para México). 
+
+# crear buffers (donde width está en mts, i.e. 1000=1km)
+buffers <- gBuffer(mat, width=buffer_r) 
+buffers_sf <<- st_as_sf(buffers) 
+
+# añadir columna a matriz para que diga de qué buffer es
+mat_info$buff_num <- as.character(over(mat, disaggregate(buffers)))
+print(paste("# buffers: ", length(unique(mat_info$buff_num))))
+buff_mat <<- mat_info
+
+buff_mat$name <-  names_cct
+
+return(buff_mat)
+}
+
+```
+
+
+```{r}
+# ###### ejemplo
+radio_buffer <- 10
+nro_escuelas <- nrow(df_o)
+matriz_test <- create_buffers(n_escuelas=nro_escuelas, buffer_r=radio_buffer,vec_lon=df_o$longitud, vec_lat=df_o$latitud,cct = df_o$cct_o )
+nro_buffers <- length(unique(matriz_test$buff_num))
+get_stats_group(matriz_test, radio_buffer) 
+write.csv(matriz_test, "sebas_radio_1k.csv")
+
+radio_buffer <- 10000
+nro_escuelas <- nrow(df_o)
+matriz_test <- create_buffers(n_escuelas=nro_escuelas, buffer_r=radio_buffer,vec_lon=df_o$longitud, vec_lat=df_o$latitud,cct = df_o$cct_o )
+nro_buffers <- length(unique(matriz_test$buff_num))
+get_stats_group(matriz_test, radio_buffer) 
+write.csv(matriz_test, "sebas_radio_10k.csv")
+
+
+
+# ###### ejemplo
+radio_buffer <- 15000
+nro_escuelas <- nrow(df_o)
+matriz_test <- create_buffers(n_escuelas=nro_escuelas, buffer_r=radio_buffer,vec_lon=df_o$longitud, vec_lat=df_o$latitud,cct = df_o$cct_o )
+nro_buffers <- length(unique(matriz_test$buff_num))
+get_stats_group(matriz_test, radio_buffer) 
+write.csv(matriz_test, "sebas_radio_15k.csv")
+```
+
+
+```{r}
+df15 <- matriz_test
+
+
+length(unique(df15$buff_num))
+
+
+top_groups15 <-df15 %>% 
+  group_by(buff_num) %>% 
+  summarise(
+    n = n()
+  ) %>% arrange(desc(n)) %>% 
+  select(buff_num,n)
+
+
+ggplot(data =df15) +
+  geom_point( aes(x=longitud, y = latitud,
+             colour = as.factor(buff_num) )) +
+  theme(legend.position = "none") 
+
+ggsave("mapa_15km.png")
+```
+
+
+```{r}
+df10 <- read.csv("sebas_radio_10k.csv")
+
+length(unique(df10$buff_num))
+
+top_groups10 <-df10 %>% 
+  group_by(buff_num) %>% 
+  summarise(
+    n = n()
+  ) %>% arrange(desc(n)) %>% 
+  select(buff_num,n)
+
+ggplot(data =df10) +
+  geom_point( aes(x=longitud, y = latitud,
+             colour = as.factor(buff_num) )) +
+  theme(legend.position = "none")
+ggsave("mapa_10km.png")
+
+
+
+mean(top_groups10$n)
+median(top_groups10$n)
+min(top_groups10$n)
+max(top_groups10$n)
+
+ggplot(top_groups10, aes(x = n))+
+  stat_density(aes(y=..count..), color = "black", fill = "blue", alpha=0.3) + 
+  scale_x_continuous(breaks=c(1,2,3,4,5,10,50,100,1000,20000),
+                     trans = "log1p", expand = c(0,0)) +
+  theme_bw() + labs(x="Número de escuelas por zonas en escala logaritmica", y = "Frequencia")
+ggsave("num_escuelas_10km.png")
+```
+
+
+```{r}
+ggplot(top_groups15, aes(x = n))+
+  stat_density(aes(y=..count..), color = "black", fill = "blue", alpha=0.3) + 
+  scale_x_continuous(breaks=c(1,2,3,4,5,10,50,100,1000,20000),
+                     trans = "log1p", expand = c(0,0)) +
+  theme_bw() + labs(x="Número de escuelas por zonas en escala logaritmica", y = "Frequencia")
+ggsave("num_escuelas_15km.png")
+
+
+mean(top_groups15$n)
+median(top_groups15$n)
+min(top_groups15$n)
+max(top_groups15$n)
+```
+

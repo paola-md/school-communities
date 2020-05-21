@@ -1,0 +1,394 @@
+---
+title: "School Clusters Mexico"
+output: html_notebook
+---
+
+```{r}
+setwd("E:/Proy_Paola_Salo/Mercados/src/paola")
+source("Utils.R")
+```
+
+
+```{r}
+df <- read_csv("./../../data/agregado_dist_sec.csv")
+```
+
+Lo convertimos en un grafo no dirigido
+
+```{r}
+
+relations <- get_relations(df)
+   
+nrow(relations)
+mean(relations$weight)
+median(relations$weight)
+
+ggplot(data= relations, aes(weight)) +
+  geom_histogram()
+ggplot(data= relations, aes(y=weight)) +
+  geom_boxplot()
+
+```
+
+```{r}
+nodos <- read.csv("./../../results/sebas_radio_10k.csv")
+
+nodos$grupo <- nodos$buff_num
+```
+
+
+```{r}
+current_group <- 1
+
+select_relations <- get_select_relations(nodos, current_group)
+select_nodos <- get_select_nodos(select_relations,current_group)
+
+school_network <- graph_from_data_frame(select_relations, directed=FALSE, vertices=select_nodos)
+is_weighted(school_network)
+
+get_centrality_stats(school_network,current_group )
+
+```
+
+
+
+```{r}
+fc <- cluster_fast_greedy(school_network)
+algorithm <- str_replace(algorithm(fc), " ", "_")
+select_nodos <- save_subgroups(fc, select_nodos,
+                               algorithm, current_group)
+
+#save_map(select_nodos,algorithm, current_group)
+get_stats_group(select_nodos, algorithm, current_group)
+get_community_stats(fc) 
+```
+
+
+```{r}
+nodos %>% group_by(buff_num) %>% summarise(n = n()) %>% arrange(desc(n))
+```
+
+
+```{r}
+buff_list <- unique(nodos$grupo)
+tam <- length(buff_list)
+
+winning_algorithm <- data.frame(best = "none", 
+                                modularity = 0, 
+                                num_schools = 0, 
+                                group = 0)
+
+
+master_nodos <-  data.frame(name = "none", 
+                            grupo = 0, 
+                            sub_grupo = 0)
+  
+for (i in 1:tam){
+  current_group <- buff_list[i]
+
+  select_relations <- get_select_relations(nodos, current_group)
+  select_nodos <- get_select_nodos(select_relations,current_group)
+  
+  num_schools <- nrow(select_nodos)
+  if(num_schools>0){
+    
+    school_network <- graph_from_data_frame(select_relations, directed=FALSE, vertices=select_nodos)
+    is_weighted(school_network)
+    
+    #get_centrality_stats(school_network,current_group)
+  
+    df1 <- compare_clustering_algorithms(cluster_label_prop(school_network),
+                                                  select_nodos,current_group) 
+    df2 <- compare_clustering_algorithms(cluster_fast_greedy(school_network),
+                                                  select_nodos,current_group)
+    
+    df4 <- compare_clustering_algorithms(cluster_leading_eigen(school_network),
+                                                  select_nodos,current_group)
+    df5 <- compare_clustering_algorithms(cluster_louvain(school_network),
+                                                  select_nodos,current_group)
+    
+    df8 <- compare_clustering_algorithms(cluster_walktrap(school_network),
+                                                  select_nodos,current_group)
+    
+    df_comparison <- rbind(df1,df2,df4,df5,df8)
+    
+    
+    if(num_schools>2){
+      best_df <- df_comparison %>% arrange(desc(modularity))
+      res <- data.frame(best =head(best_df$algoritm, 1), 
+                        modularity = head(best_df$modularity, 1),
+                        num_schools = num_schools,
+                        group = current_group )
+      winning_algorithm <- rbind(winning_algorithm, res)
+      
+      new_nodes <- get_new_nodes(head(best_df$algoritm, 1),
+                                 current_group) %>%
+                    select(name, grupo, sub_grupo)
+      master_nodos <- rbind(master_nodos, new_nodes)
+    
+    }
+    else{
+      select_nodos <- nodos %>% filter(grupo == current_group)  %>% 
+      mutate(sub_grupo = 0) %>% select(name, grupo, sub_grupo)
+      master_nodos <- rbind(master_nodos, select_nodos)
+    }
+
+    
+    write.csv(df_comparison, 
+              str_c("./../../results/comparison/flujo_10k_", current_group, ".csv"))
+  }
+  else{
+    select_nodos <- nodos %>% filter(grupo == current_group)  %>% 
+      mutate(sub_grupo = 0) %>% select(name, grupo, sub_grupo)
+    master_nodos <- rbind(master_nodos, select_nodos)
+  }
+}
+
+winning_algorithm <- winning_algorithm %>% filter(best != "none")
+write.csv(winning_algorithm, 
+            str_c("./../../results/comparison/winning_algorithm_mod.csv"))
+
+
+master_nodos <- master_nodos %>% filter(name != "none")
+write.csv(master_nodos, 
+            str_c("./../../results/master_nodos.csv"))
+```
+
+
+```{r}
+communities <- master_nodos %>% left_join(nodos, by = c("name")) %>% 
+  select(name, longitud, latitud, sub_grupo, grupo.x) %>% 
+  rename(grupo = grupo.x) %>% 
+  mutate(
+    id_community = str_c(
+      str_pad(as.character(grupo), 3, pad = "0"),
+      str_pad(as.character(sub_grupo), 3, pad = "0")
+    )
+  )
+
+write.csv(communities , 
+            str_c("./../../results/communities.csv"))
+```
+
+
+```{r}
+winning_algorithm %>% group_by(best) %>% count(n=n()) %>% arrange(desc(n))
+
+```
+
+### Baseline
+
+```{r}
+
+dir_shapefile <- "E:/Proy_Paola_Salo/Educacion/hechosNotables/source/marco geoestadistico nacional 2010/municipal"
+
+df_coor<- nodos%>% 
+  drop_na(lat,lon) %>% 
+  filter(
+    lon > -180 ,
+    lon < 180 ,
+    lat > -90 ,
+    lat < 90 
+  )
+
+xy_muni <- SpatialPoints(as.data.frame(cbind(df_coor$lon,df_coor$lat)))
+CRS.new <- CRS("+proj=longlat +ellps=WGS84 +no_defs")
+proj4string(xy_muni) <- CRS.new
+
+municipio_shape <-shapefile(dir_shapefile)
+info <- over(xy_muni,municipio_shape)
+df_coor$municipio_inegi <-info$CVEGEO 
+
+```
+
+
+```{r}
+members <- as.double(df_coor$municipio_inegi)
+nam <- as.character(df_coor$name)
+comms <- list(membership=members, vcount = vcount(base_network),
+              name = nam,algorithm="by.hand" )
+class(comms)<- "communities"
+modularity(base_network, membership(comms))
+```
+
+```{r}
+fc <- comms
+  sizes_fc <- sizes(fc)
+  stats <- data.frame(
+    algoritm =   algorithm(fc),
+    num_groups =   length(fc) ,
+    mean_size = mean(sizes_fc),
+    median_size = median(sizes_fc),
+    max_size = max(sizes_fc),
+    min_size= min(sizes_fc)
+  )
+  stats
+```
+
+## VIEJO
+
+```{r}
+## ================= Carga/instala paquetes =================
+cargar <- function(paquete) {
+  library(paquete, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)
+  }
+
+paquetes <- c('magrittr','dplyr', 'tidyr', 'readr', 'dplyr',
+              'ggplot2', 'stringr','foreach', 'purrr',
+              'broom','rgeos','sp','rgdal','maptools','raster')
+
+
+lapply(paquetes, cargar)
+
+dir_shapefile <- "E:/Proy_Paola_Salo/Educacion/hechosNotables/source/marco geoestadistico nacional 2010/estatal"
+
+nacional_shape <-shapefile(dir_shapefile)
+towns_fortify <- fortify(nacional_shape)
+
+top_groups <-select_nodos %>% 
+  group_by(sub_grupo) %>% 
+  summarise(
+    n = n()
+  ) %>% arrange(desc(n)) %>% 
+      top_n(15) %>% 
+    dplyr::select(sub_grupo)
+
+plot_group <- select_nodos %>% 
+  filter(!is.na(lat)) %>% 
+  inner_join(top_groups)
+
+ggplot() +geom_polygon(data = towns_fortify, 
+                       mapping = aes(x=long, y=lat, group=group,
+                           fill = NA), color = "grey", 
+                       fill = NA, size = 0.2)+
+  geom_point(data =plot_group, aes(x=lon, y = lat,
+             colour = as.factor(sub_grupo) )) +
+  theme(legend.position = "none")
+ggsave("mapa_greedy_complete.png")
+```
+
+
+
+
+
+```{r}
+
+length(unique(nodos$buff_num))
+
+top_groups <- nodos %>% 
+  group_by(buff_num) %>% 
+  summarise(
+    n = n()
+  ) %>% arrange(desc(n)) %>% 
+  select(buff_num,n)
+
+ggplot(top_groups, aes(x = n))+
+  stat_density(aes(y=..count..), color = "black", fill = "blue", alpha=0.3) + 
+  scale_x_continuous(breaks=c(1,2,3,4,5,10,50,100,1000,20000),
+                     trans = "log1p", expand = c(0,0)) +
+  theme_bw() + labs(x="Número de escuelas por zonas en escala logaritmica", y = "Frequencia")
+ggsave("num_escuelas_15km.png")
+
+
+mean(top_groups$n)
+median(top_groups$n)
+min(top_groups$n)
+max(top_groups$n)
+```
+
+
+
+
+```{r}
+
+## ================= Carga/instala paquetes =================
+cargar <- function(paquete) {
+  library(paquete, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)
+  }
+
+paquetes <- c('magrittr','dplyr', 'tidyr', 'readr', 'dplyr',
+              'ggplot2', 'stringr','foreach', 'purrr',
+              'broom','rgeos','sp','rgdal','maptools','raster')
+
+
+lapply(paquetes, cargar)
+
+dir_shapefile <- "E:/Proy_Paola_Salo/Educacion/hechosNotables/source/marco geoestadistico nacional 2010/estatal"
+
+nacional_shape <-shapefile(dir_shapefile)
+towns_fortify <- fortify(nacional_shape)
+
+top_groups <-select_nodos %>% 
+  group_by(sub_grupo) %>% 
+  summarise(
+    n = n()
+  ) %>% arrange(desc(n)) %>% 
+      top_n(10) %>% 
+    dplyr::select(sub_grupo)
+
+plot_group <- select_nodos %>% 
+  filter(!is.na(lat)) %>% 
+  inner_join(top_groups)
+
+ggplot() +geom_polygon(data = towns_fortify, 
+                       mapping = aes(x=long, y=lat, group=group,
+                           fill = NA), color = "grey", 
+                       fill = NA, size = 0.2)+
+  geom_point(data =plot_group, aes(x=lon, y = lat,
+             colour = as.factor(sub_grupo) )) +
+  theme(legend.position = "none")
+ggsave("mapa_greedy10.png")
+
+```
+
+```{r}
+ggplot() + 
+  geom_point(data =plot_group, aes(x=lon, y = lat,
+             colour = as.factor(sub_grupo) )) +
+  theme(legend.position = "none") 
+  
+ggsave("mapa_greedy10_zoom.png")
+```
+
+
+```{r}
+
+ggplot() + stat_density2d(data =plot_group, show.legend = F,
+                          aes(x=lon, y = lat), geom = "polygon",
+                          size = 2, bins = 10) +
+  geom_polygon(data = towns_fortify, 
+                       mapping = aes(x=long, y=lat, group=group,
+                           fill = NA), color = "grey", 
+                       fill = NA, size = 0.2)+
+  geom_point(data =plot_group, aes(x=lon, y = lat,
+             colour = as.factor(sub_grupo) )) +
+    coord_map( ylim = c(-99.1, -99.12), 
+              xlim = c(19.42,19.43)) + #19.42711	-99.13147
+  theme(legend.position = "none") 
+  
+ggsave("mapa_greedy10_zoom.png")
+```
+
+
+
+```{r}
+school_network <- school_network %>%   as_tbl_graph
+school_network  <- school_network %>% tidygraph::activate(nodes) %>% 
+  mutate(
+        alpha = centrality_alpha(weights = weight),
+        authority = centrality_authority(weights = weight),
+        betweenness = centrality_betweenness(weights = weight),
+        eigen = centrality_eigen(weights = weight),
+        hub = centrality_hub(weights = weight),
+        pagerank = centrality_pagerank(weights = weight),
+        subgraph = centrality_subgraph(),
+        degree = centrality_degree()
+         # https://rdrr.io/cran/tidygraph/man/centrality.html
+     )
+
+
+resumen_central <- school_network %>% as_tibble()
+
+```
+
+

@@ -1,0 +1,339 @@
+---
+title: "Reporte Mercados"
+output: html_notebook
+---
+
+```{r}
+source("Utils.R")
+```
+
+
+
+```{r}
+df_relations <- read_csv("./../../data/processed/agregado_dist_sec.csv")
+relations <- get_relations(df_relations)
+   
+nrow(relations)
+mean(relations$weight)
+median(relations$weight)
+
+ggplot(data= relations, aes(weight)) +
+  geom_histogram()
+ggplot(data= relations, aes(y=weight)) +
+  geom_boxplot()
+
+```
+
+```{r}
+nodos <- read.csv("./../../data/processed/sebas_radio_10k.csv")
+
+nodos$grupo <- nodos$buff_num
+```
+
+
+```{r}
+
+length(unique(nodos$buff_num))
+
+top_groups <- nodos %>% 
+  group_by(buff_num) %>% 
+  summarise(
+    n = n()
+  ) %>% arrange(desc(n)) %>% 
+  select(buff_num,n)
+
+ggplot(top_groups, aes(x = n))+
+  stat_density(aes(y=..count..), color = "black", fill = "blue", alpha=0.3) + 
+  scale_x_continuous(breaks=c(1,2,3,4,5,10,50,100,1000,20000),
+                     trans = "log1p", expand = c(0,0)) +
+  theme_bw() + labs(x="Número de escuelas por zonas en escala logaritmica", y = "Frequencia")
+ggsave("num_escuelas_10km.png")
+
+
+mean(top_groups$n)
+median(top_groups$n)
+min(top_groups$n)
+max(top_groups$n)
+```
+
+
+
+```{r}
+df_relations <- read_csv("./../../data/processed/agregado_dist_sec.csv")
+df_com<- read_csv("./../../data/processed/communities.csv")
+
+
+df_com <- df_com %>%   mutate(
+    id_community = str_c(
+      str_pad(as.character(grupo), 3, pad = "0"),
+      str_pad(as.character(sub_grupo), 4, pad = "0")
+    ),
+    estado = substr(name, 1,2)
+  )
+```
+
+
+```{r}
+length(unique(df_com$id_community))
+
+top_groups <- df_com %>% 
+  group_by(id_community) %>% 
+  summarise(
+    n = n()
+  ) %>% arrange(desc(n)) %>% 
+  select(id_community,n)
+
+ggplot(top_groups, aes(x = n))+
+  stat_density(aes(y=..count..), color = "black", fill = "blue", alpha=0.3) + 
+  scale_x_continuous(breaks=c(1,2,3,4,5,10,50,100,800),
+                     trans = "log1p", expand = c(0,0)) +
+  theme_bw() + labs(x="Número de escuelas por comunidad en escala logaritmica", y = "Frequencia")
+#ggsave("num_escuelas_com.png")
+
+
+mean(top_groups$n)
+median(top_groups$n)
+min(top_groups$n)
+max(top_groups$n)
+```
+
+# Mapa de comunidades
+
+```{r}
+library("ggmap")
+
+top_groups <- df_com %>% 
+group_by(id_community) %>% 
+summarise(
+  n = n()
+) %>% arrange(desc(n)) %>% 
+top_n(3) %>% 
+select(id_community)
+
+
+plot_group <- df_com %>% 
+filter(!is.na(latitud)) %>% 
+inner_join(top_groups)
+
+qmplot(longitud, latitud, data = plot_group,
+     colour = as.factor(id_community), 
+     size = I(1), 
+     mapcolor = "bw")
+
+
+#ggsave("top15.png")
+```
+
+
+
+```{r}
+df_resumen <- df_com %>% mutate(
+  estado = substr(name, 1,2)
+) %>% group_by(id_community) %>% 
+  summarise(
+    num_edos = length(unique(estado)),
+    n = n()
+  )
+
+sum(df_resumen$num_edos==1)/nrow(df_resumen)
+
+
+plot_group <- df_com %>% 
+filter(id_community=="0011389") 
+
+
+qmplot(longitud, latitud, data = plot_group,
+     colour = as.factor(estado), 
+     size = I(4),
+     mapcolor = "bw")
+
+ggsave("4_estados.png")
+```
+
+```{r}
+
+
+plot_group <- df_com %>% 
+filter(estado=="09") 
+
+
+qmplot(longitud, latitud, data = plot_group,
+     colour = as.factor(id_community), 
+     size = I(1),
+     mapcolor = "bw")
+
+ggsave("cdmx.png")
+```
+
+
+```{r}
+
+
+top_groups <- df_com %>% 
+  filter(estado=="14") %>% 
+group_by(id_community) %>% 
+summarise(
+  n = n()
+) %>% arrange(desc(n)) %>% 
+top_n(20) %>% 
+select(id_community)
+
+plot_group <- df_com %>% 
+filter(!is.na(latitud)) %>% 
+inner_join(top_groups)
+
+qmplot(longitud, latitud, data = plot_group,
+     colour = as.factor(id_community), 
+     size = I(1),
+     mapcolor = "bw")
+
+#ggsave("cdmx.png")
+```
+
+
+```{r}
+
+plot_group <- df_com %>% 
+filter(id_community=="0010956" | id_community=="0010028" ) %>% 
+  filter(estado=="09")
+
+qmplot(longitud, latitud, data = plot_group,
+     colour = as.factor(estado), 
+     size = I(2),
+     mapcolor = "bw")
+
+qmplot(longitud, latitud, data = plot_group,
+     colour = as.factor(id_community), 
+     size = I(2),
+     mapcolor = "bw")
+
+#ggsave("4_estados.png")
+```
+
+
+```{r}
+nodos <- df_com %>% 
+filter(id_community=="0010956" | id_community=="0010028" ) %>% 
+  filter(estado=="09")
+
+relations <- get_relations(df_relations)
+select_relations <- get_select_relations_com(relations, nodos) 
+select_nodos <- get_nodos(select_relations)
+select_nodos <- select_nodos %>% left_join(df_com, by= c("name"))
+
+school_network <- graph_from_data_frame(select_relations, directed=FALSE, vertices=select_nodos)
+is_weighted(school_network)
+```
+
+
+
+# Ya tenemos grafo de esa zone: Son 179 escuelas
+
+```{r}
+resumen_central  <- school_network %>%  as_tbl_graph %>% 
+    tidygraph::activate(nodes) %>% 
+    mutate(
+      central_between = centrality_betweenness(weights = weight),
+      central_eigen = centrality_eigen(weights = weight),
+      central_grado = centrality_degree(),
+      central_closeness = centrality_closeness()
+    )
+  
+```
+
+```{r}
+df_central <- resumen_central %>% as_tibble()
+```
+
+
+```{r}
+library(ggrepel)
+
+resumen_central %>% 
+    ggraph(layout = 'fr', niter=2000) +
+    geom_edge_link(aes(alpha= weight), alpha = 0.4, colour="gray") +
+    geom_node_point(aes(size = central_between, colour=as.factor(id_community))) +
+    theme_graph()
+
+ggsave("grafo_between_cdmx.png")
+```
+
+```{r}
+
+resumen_central %>% 
+    ggraph(layout = 'fr', niter=2000) +
+    geom_edge_link(aes(alpha= weight), alpha = 0.4, colour="gray") +
+    geom_node_point(aes(size = central_eigen, colour=as.factor(id_community))) +
+    theme_graph()
+
+ggsave("grafo_eigen_cdmx.png")
+```
+
+
+```{r}
+resumen_central %>% 
+    ggraph(layout = 'fr', niter=2000) +
+    geom_edge_link(aes(alpha= weight), alpha = 0.4, colour="gray") +
+    geom_node_point(aes(size = central_grado, colour=as.factor(id_community))) +
+    theme_graph()
+
+ggsave("grafo_grado_cdmx.png")
+```
+
+
+```{r}
+resumen_central %>% 
+    ggraph(layout = 'fr', niter=2000) +
+    geom_edge_link(aes(alpha= weight), alpha = 0.4, colour="gray") +
+    geom_node_point(aes(size = central_closeness, colour=as.factor(id_community))) +
+    theme_graph()
+
+ggsave("grafo_close_cdmx.png")
+```
+
+
+```{r}
+resumen_central %>% 
+    ggraph(layout = 'fr', niter=2000) +
+    geom_edge_link(arrow = arrow(length = unit(0.5, 'mm')), alpha = 0.3, colour="gray") +
+    geom_node_point(aes(size = log(central_pagerank), colour=as.factor(id_community))) +
+    theme_graph()
+```
+
+
+
+
+# Creamos network
+
+```{r}
+select_relations <- get_relations(df_relations)
+select_nodos <- get_nodos(select_relations)
+
+select_nodos <- select_nodos %>% left_join(df_com, by= c("name"))
+
+school_network <- graph_from_data_frame(select_relations, directed=FALSE, vertices=select_nodos)
+is_weighted(school_network)
+```
+
+
+# Modularidad de nuestro baseline
+
+```{r}
+members <- as.double(select_nodos$id_community)
+nam <- as.character(select_nodos$name)
+comms <- list(membership=members, vcount = vcount(school_network),
+              name = nam,algorithm="by.hand" )
+class(comms)<- "communities"
+modularity(school_network, membership(comms))
+```
+
+```{r}
+members <- as.double(df_coor$municipio_inegi)
+nam <- as.character(df_coor$name)
+comms <- list(membership=members, vcount = vcount(base_network),
+              name = nam,algorithm="by.hand" )
+class(comms)<- "communities"
+modularity(base_network, membership(comms))
+```
+
+
