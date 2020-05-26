@@ -1,0 +1,81 @@
+---
+title: "visnetwork"
+author: "Sebastián Cadavid Sánchez"
+date: "5/24/2020"
+output: html_document
+---
+
+```{r}
+library(leaflet)
+library(png)
+library(tidyverse)
+library(sp)
+```
+
+```{r}
+select_relations <- read_csv("relations_cdmx3.csv")
+head(select_relations)
+```
+
+```{r}
+select_nodos <- read_csv("nodos_cdmx3.csv")
+head(select_nodos)
+```
+
+
+```{r}
+tab <- table(select_relations$cct_o)
+big.id <- names(tab)[tab>=5]
+big.id
+# solo las escuelas con más migración para visualización
+select_nodos <- select_nodos[select_nodos$name %in% big.id,]
+select_relations  <- select_relations[select_relations$cct_o %in% big.id & 
+                    select_relations$cct_d %in% big.id, ]
+
+table(select_relations$cct_o)
+```
+
+
+```{r}
+location <- data.frame("escuela"=select_nodos$name, "lat"=select_nodos$lat, "lon"=select_nodos$lon)
+location
+```
+
+```{r}
+links <- data.frame("From"=select_relations$cct_o, "To"=select_relations$cct_d, "freq"=select_relations$flujo)
+
+n <- graph.data.frame(links, directed=TRUE, vertices=location)
+network <- get.data.frame(n, "both")
+
+vert <- network$vertices
+coordinates(vert) <- ~ lon + lat
+edges <- network$edges
+
+edges <- lapply(1:nrow(edges), function(i){
+  as(rbind(vert[vert$name==edges[i, "from"], ],
+           vert[vert$name==edges[i, "to"], ]),
+           "SpatialLines")
+  }
+)
+
+for (i in seq_along(edges)){
+  edges[[i]] <- spChFIDs(edges[[i]], as.character(i))
+}
+
+edges <- do.call(rbind, edges)
+```
+
+```{r}
+select_relations
+```
+
+
+```{r}
+# addTiles(urlTemplate = "https://mts1.google.com/vt/lyrs=s&hl=en&src=app&x={x}&y={y}&z={z}&s=G", attribution = 'Google')
+leaflet(vert) %>% 
+    addTiles() %>% 
+    addMarkers(data = vert) %>% 
+    addCircles(data=vert, radius=1, weight = 1, color="#52E74B") %>% 
+    addPolylines(data=edges, weight = 1*network$edges$freq, color="#6754D8") 
+```
+
